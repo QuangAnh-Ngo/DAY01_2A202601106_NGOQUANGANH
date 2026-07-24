@@ -99,13 +99,12 @@ def compare_models(prompt: str) -> dict:
     )
 
     return {
-        "gpt4o_response": gpt4o_response,
-        "mini_response": mini_response,
-        "gpt4o_latency": gpt4o_latency,
-        "mini_latency": mini_latency,
-        "gpt4o_cost_estimate": gpt4o_cost_estimate,
+        "gpt4o_answer": gpt4o_response,
+        "mini_answer": mini_response,
+        "gpt4o_time": gpt4o_latency,
+        "mini_time": mini_latency,
+        "gpt4o_cost": gpt4o_cost_estimate,
     }
-
 
 # ===========================================================================
 # PART 2 — SYSTEM PROMPT & TOKEN (Block 2: 15h40–16h20)
@@ -121,26 +120,24 @@ def chat_with_system_prompt(
     temperature: float = 0.7,
     max_tokens: int = 256,
 ) -> tuple[str, float]:
-    """
-    Gọi API với MESSAGES gồm 2 phần: system prompt (định hình vai trò/persona
-    của model) và user prompt (câu hỏi thật).
+    from openai import OpenAI
 
-    Args:
-        system_prompt: Chỉ dẫn vai trò, ví dụ "Bạn là giáo viên tiểu học,
-                       giải thích mọi thứ thật đơn giản."
-        user_prompt:   Tin nhắn của người dùng.
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
 
-    Returns:
-        Tuple (response_text: str, latency_seconds: float).
-
-    Gợi ý:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-    """
-    # TODO: giống call_openai nhưng messages có thêm phần tử role="system"
-    raise NotImplementedError("Implement chat_with_system_prompt")
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    start_time = time.perf_counter()
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    latency_seconds = time.perf_counter() - start_time
+    response_text = response.choices[0].message.content
+    return response_text, latency_seconds
 
 
 # ---------------------------------------------------------------------------
@@ -166,8 +163,13 @@ def count_tokens(text: str, model: str = OPENAI_MODEL) -> int:
         try/except — nếu lỗi (offline, model lạ), dùng ước lượng dự phòng:
         max(1, len(text) // 4)   (trung bình 1 token ≈ 4 ký tự)
     """
-    # TODO: dùng tiktoken để đếm token, có fallback khi lỗi
-    raise NotImplementedError("Implement count_tokens")
+    try:
+        import tiktoken
+
+        enc = tiktoken.encoding_for_model(model)
+        return len(enc.encode(text))
+    except Exception:
+        return max(1, len(text) // 4)
 
 
 # ---------------------------------------------------------------------------
@@ -193,8 +195,20 @@ def estimate_cost(prompt: str, response: str, model: str = OPENAI_MODEL) -> dict
         (.get với fallback: model không có trong bảng giá — ví dụ model NIM
          miễn phí — thì lấy giá gpt-4o làm tham chiếu học tập)
     """
-    # TODO: đếm token prompt/response, tra bảng giá, trả về dict 5 key
-    raise NotImplementedError("Implement estimate_cost")
+    prompt_tokens = count_tokens(prompt, model=model)
+    completion_tokens = count_tokens(response, model=model)
+
+    pricing = PRICING_PER_1K_TOKENS.get(model, PRICING_PER_1K_TOKENS["gpt-4o"])
+    prompt_cost = prompt_tokens / 1000 * pricing["input"]
+    completion_cost = completion_tokens / 1000 * pricing["output"]
+
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "prompt_cost": prompt_cost,
+        "completion_cost": completion_cost,
+        "total_cost": prompt_cost + completion_cost,
+    }
 
 
 # ===========================================================================
@@ -205,25 +219,33 @@ def estimate_cost(prompt: str, response: str, model: str = OPENAI_MODEL) -> dict
 # Task 3.1 — Chatbot streaming có lịch sử hội thoại
 # ---------------------------------------------------------------------------
 def streaming_chatbot() -> None:
-    """
-    Chatbot dòng lệnh tương tác dùng streaming.
+    from openai import OpenAI
 
-    Hành vi:
-        - Stream token từ OpenAI ngay khi chúng được sinh ra (in từng chunk).
-        - Duy trì 4 lượt hội thoại gần nhất trong history.
-        - Gõ 'quit', 'exit' hoặc 'bye' để thoát.
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    history = []
 
-    Gợi ý:
-        - Giữ list `history` gồm các dict {"role": ..., "content": ...}.
-        - Dùng stream=True trong client.chat.completions.create() và lặp:
-            for chunk in stream:
-                delta = chunk.choices[0].delta.content or ""
-                print(delta, end="", flush=True)
-        - Sau mỗi lượt, thêm phản hồi assistant vào history.
-        - Cắt history còn 4 lượt cuối (8 message): history = history[-8:]
-    """
-    # TODO: vòng lặp while, đọc input, stream phản hồi, duy trì history
-    raise NotImplementedError("Implement streaming_chatbot")
+    while True:
+        user_input = input("You: ").strip()
+        if user_input.lower() in {"quit", "exit"}:
+            break
+
+        history.append({"role": "user", "content": user_input})
+        stream = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=history,
+            stream=True,
+        )
+
+        reply_parts = []
+        print("Assistant: ", end="")
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content or ""
+            print(delta, end="", flush=True)
+            reply_parts.append(delta)
+        print()
+
+        history.append({"role": "assistant", "content": "".join(reply_parts)})
+        history = history[-6:]
 
 
 # ---------------------------------------------------------------------------
@@ -234,23 +256,13 @@ def retry_with_backoff(
     max_retries: int = 3,
     base_delay: float = 0.1,
 ) -> Any:
-    """
-    Gọi fn(). Nếu ném exception, thử lại tối đa max_retries lần với
-    exponential backoff (delay = base_delay * 2^attempt).
-
-    Args:
-        fn:          Callable không tham số.
-        max_retries: Số lần thử lại tối đa.
-        base_delay:  Delay ban đầu (giây) trước lần thử lại đầu tiên.
-
-    Returns:
-        Giá trị trả về của fn() khi thành công.
-
-    Raises:
-        Exception cuối cùng của fn() sau khi hết số lần thử.
-    """
-    # TODO: vòng lặp retry với exponential backoff
-    raise NotImplementedError("Implement retry_with_backoff")
+    for attempt in range(max_retries + 1):
+        try:
+            return fn()
+        except Exception:
+            if attempt == max_retries:
+                raise
+            time.sleep(base_delay * 2**attempt)
 
 
 # ===========================================================================
@@ -308,34 +320,88 @@ def run_assistant(
         return {"turns": turns, "tokens_used": tokens_used,
                 "total_cost": total_cost, "history": history}
     """
-    # TODO: triển khai theo khung sườn trong docstring
-    raise NotImplementedError("Implement run_assistant")
+    from openai import OpenAI
+
+    if get_input is None:
+        get_input = input
+
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    history, turns, tokens_used, total_cost = [], 0, 0, 0.0
+
+    while True:
+        if max_turns is not None and turns >= max_turns:
+            break
+
+        user_msg = get_input()
+        if user_msg.strip().lower() in ("quit", "exit", "bye"):
+            break
+
+        messages = (
+            [{"role": "system", "content": persona}]
+            + history
+            + [{"role": "user", "content": user_msg}]
+        )
+
+        stream = retry_with_backoff(
+            lambda: client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=messages,
+                stream=True,
+            )
+        )
+
+        reply_parts = []
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content or ""
+            print(delta, end="", flush=True)
+            reply_parts.append(delta)
+        reply = "".join(reply_parts)
+
+        history.append({"role": "user", "content": user_msg})
+        history.append({"role": "assistant", "content": reply})
+        history = history[-8:]
+
+        turns += 1
+        tokens_used += count_tokens(user_msg) + count_tokens(reply)
+        total_cost += estimate_cost(user_msg, reply)["total_cost"]
+
+    return {
+        "turns": turns,
+        "tokens_used": tokens_used,
+        "total_cost": total_cost,
+        "history": history,
+    }
 
 
 # ===========================================================================
 # BONUS (không bắt buộc — cho bạn nào xong sớm)
 # ===========================================================================
 def batch_compare(prompts: list[str]) -> list[dict]:
-    """
-    Chạy compare_models cho từng prompt trong list.
-
-    Returns:
-        List các dict — mỗi dict là kết quả compare_models kèm thêm
-        key "prompt" chứa prompt gốc.
-    """
-    # TODO (bonus): lặp qua prompts, gọi compare_models, thêm key "prompt"
-    raise NotImplementedError("Implement batch_compare")
+    results = []
+    for prompt in prompts:
+        comparison = compare_models(prompt)
+        results.append({**comparison, "prompt": prompt})
+    return results
 
 
 def format_comparison_table(results: list[dict]) -> str:
-    """
-    Định dạng kết quả batch_compare thành bảng text dễ đọc.
+    def shorten(text: str) -> str:
+        return text if len(text) <= 40 else f"{text[:37]}..."
 
-    Cột: Prompt | GPT-4o Response | Mini Response | GPT-4o Latency | Mini Latency
-    Gợi ý: cắt text dài còn 40 ký tự cho dễ nhìn.
-    """
-    # TODO (bonus): dựng chuỗi bảng và trả về
-    raise NotImplementedError("Implement format_comparison_table")
+    rows = ["Prompt | GPT-4o Response | Mini Response | GPT-4o Latency | Mini Latency"]
+    for result in results:
+        rows.append(
+            " | ".join(
+                [
+                    shorten(result["prompt"]),
+                    shorten(result["gpt4o_response"]),
+                    shorten(result["mini_response"]),
+                    f"{result['gpt4o_latency']:.2f}s",
+                    f"{result['mini_latency']:.2f}s",
+                ]
+            )
+        )
+    return "\n".join(rows)
 
 
 # ---------------------------------------------------------------------------
