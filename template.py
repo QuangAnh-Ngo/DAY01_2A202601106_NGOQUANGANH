@@ -77,45 +77,34 @@ def call_openai_mini(
     top_p: float = 0.9,
     max_tokens: int = 256,
 ) -> tuple[str, float]:
-    """
-    Gọi API với model gpt-4o-mini — nhanh hơn và rẻ hơn.
-
-    Returns:
-        Tuple (response_text: str, latency_seconds: float).
-
-    Gợi ý:
-        Tái sử dụng call_openai() với model=OPENAI_MINI_MODEL — 1 dòng code.
-    """
-    # TODO: gọi call_openai với model=OPENAI_MINI_MODEL
-    raise NotImplementedError("Implement call_openai_mini")
+    return call_openai(
+        prompt=prompt,
+        model=OPENAI_MINI_MODEL,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Task 1.3 — So sánh GPT-4o vs GPT-4o-mini
 # ---------------------------------------------------------------------------
 def compare_models(prompt: str) -> dict:
-    """
-    Gọi cả hai model với cùng một prompt và trả về dict so sánh.
+    gpt4o_response, gpt4o_latency = call_openai(prompt)
+    mini_response, mini_latency = call_openai_mini(prompt)
+    gpt4o_cost_estimate = (
+        (len(gpt4o_response.split()) / 0.75)
+        / 1000
+        * PRICING_PER_1K_TOKENS["gpt-4o"]["output"]
+    )
 
-    Returns:
-        Dict với các key:
-            - "gpt4o_answer":      str
-            - "mini_answer":       str
-            - "gpt4o_time":       float
-            - "mini_time":        float
-            - "gpt4o_cost": float  (USD ước tính cho phản hồi)
-
-    Gợi ý:
-        pricing = PRICING_PER_1K_TOKENS.get(
-            OPENAI_MODEL, PRICING_PER_1K_TOKENS["gpt-4o"]
-        )
-        cost = (len(response.split()) / 0.75) / 1000 * pricing["output"]
-        (0.75 từ ≈ 1 token — ước lượng thô; Part 2 sẽ tính chính xác hơn.
-         Dùng .get để lấy đúng giá model đang chạy — gpt-4o, gemini...;
-         model không có trong bảng thì lấy giá gpt-4o làm tham chiếu)
-    """
-    # TODO: gọi call_openai và call_openai_mini, ghép dict kết quả
-    raise NotImplementedError("Implement compare_models")
+    return {
+        "gpt4o_response": gpt4o_response,
+        "mini_response": mini_response,
+        "gpt4o_latency": gpt4o_latency,
+        "mini_latency": mini_latency,
+        "gpt4o_cost_estimate": gpt4o_cost_estimate,
+    }
 
 
 # ===========================================================================
